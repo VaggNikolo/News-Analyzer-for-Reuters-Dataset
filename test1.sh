@@ -15,92 +15,163 @@ declare -A jaccard_index
 
 parse_categories_per_document() {
     local filepath=$1
+    local counter=0
+
+    echo "Starting to parse categories per document from $filepath"
 
     while IFS=' ' read -r category document_id _; do
         if [[ -n "$document_id" ]]; then
-            # Append the category to the existing string, separated by spaces
             categories_per_document["$document_id"]+="${category} "
         fi
+        ((counter++))
+        if (( counter % 1000 == 0 )); then
+            echo "Processed $counter lines in categories per document."
+        fi
     done < "$filepath"
+
+    echo "Finished parsing categories per document."
 }
 
 # Parses multiple vectors files and returns a mapping of each document ID to a list of term IDs
 parse_terms_in_documents() {
     local filepath=$1
+    local counter=0
+
+    echo "Starting to parse terms in documents from $filepath"
 
     while IFS=' ' read -r document_id terms; do
         if [[ -n "$document_id" ]]; then
-            # Extract just the term IDs (ignoring the weights) and append them to the string
-            term_ids=$(echo "$terms" | grep -oE '[0-9]+:' | sed 's/://g')
-            for term_id in $term_ids; do
+            local term_array=($terms)
+            for term_with_weight in "${term_array[@]}"; do
+                local term_id=${term_with_weight%%:*}
                 terms_per_document["$document_id"]+="${term_id} "
             done
         fi
+        ((counter++))
+        if (( counter % 1000 == 0 )); then
+            echo "Processed $counter documents in terms parsing."
+        fi
     done < "$filepath"
+
+    echo "Finished parsing terms in documents."
 }
+
+
 
 # Parses the stem-term-idf map file and returns a mapping of term IDs to stems and vice versa
 parse_tid_to_stem() {
     local filepath=$1
     local line_counter=0
 
+    echo "Starting to parse term ID to stem from $filepath"
+
     while IFS=' ' read -r stem term_id _; do
         ((line_counter++))
-        # Skip the first two lines
         if [ "$line_counter" -le 2 ]; then
             continue
         fi
-
-        # Skip stems consisting of underscores only
         if [ "$stem" = "______" ]; then
             continue
         fi
-
-        # Populate both mappings: term_id to stem and stem to term_id
         term_id_to_stem["$term_id"]="$stem"
         stem_to_term_id["$stem"]="$term_id"
+
+        if (( line_counter % 1000 == 0 )); then
+            echo "Processed $line_counter term IDs."
+        fi
     done < "$filepath"
+
+    echo "Finished parsing term ID to stem."
 }
 
 # Precomputes DOC(T) and DOC(C)
 precompute_doc_sets() {
+    # Resetting arrays
+    doc_per_term=()
+    doc_per_category=()
+    local counter=0
+
+    echo "Starting to precompute DOC(T)."
+
     # Precompute DOC(T)
     for document_id in "${!terms_per_document[@]}"; do
-        for term_id in ${terms_per_document[$document_id]}; do
+        local terms=(${terms_per_document[$document_id]})
+        for term_id in "${terms[@]}"; do
             doc_per_term["$term_id"]+="${document_id} "
         done
+
+        ((counter++))
+        if (( counter % 1000 == 0 )); then
+            echo "Processed $counter documents for DOC(T)."
+        fi
     done
+
+    echo "Finished precomputing DOC(T)."
+    echo "Starting to precompute DOC(C)."
+    counter=0
 
     # Precompute DOC(C)
     for document_id in "${!categories_per_document[@]}"; do
-        for category in ${categories_per_document[$document_id]}; do
+        local categories=(${categories_per_document[$document_id]})
+        for category in "${categories[@]}"; do
             doc_per_category["$category"]+="${document_id} "
         done
+
+        ((counter++))
+        if (( counter % 1000 == 0 )); then
+            echo "Processed $counter documents for DOC(C)."
+        fi
     done
+
+    echo "Finished precomputing DOC(C)."
 }
 
 # Calculates the Jaccard Index
 calculate_jaccard_index() {
+    local term_counter=0
+
+    echo "Starting Jaccard Index calculation."
+
     for term_id in "${!doc_per_term[@]}"; do
-        local term_docs=(${doc_per_term[$term_id]})
+        # Convert term documents to a hash table for faster lookup
+        declare -A term_docs_hash
+        for doc in ${doc_per_term[$term_id]}; do
+            term_docs_hash["$doc"]=1
+        done
 
         for category in "${!doc_per_category[@]}"; do
-            local category_docs=(${doc_per_category[$category]})
-            local intersection=($(echo "${term_docs[@]}" "${category_docs[@]}" | tr ' ' '\n' | sort | uniq -d))
-            local union=($(echo "${term_docs[@]}" "${category_docs[@]}" | tr ' ' '\n' | sort | uniq))
+            local intersection_count=0
 
-            local intersection_count=${#intersection[@]}
-            local union_count=${#union[@]}
+            # Calculate intersection count
+            for doc in ${doc_per_category[$category]}; do
+                if [[ ${term_docs_hash[$doc]} ]]; then
+                    ((intersection_count++))
+                fi
+            done
 
-            # Calculate Jaccard Index and store in jaccard_index array
+            # Union count is the sum of unique documents in both sets minus the intersection count
+            local union_count=$((${#term_docs_hash[@]} + ${#doc_per_category[$category]} - intersection_count))
+
+            # Calculate Jaccard Index
             if [ "$union_count" -ne 0 ]; then
-                jaccard_index["$term_id,$category"]=$(echo "$intersection_count / $union_count" | bc -l)
+                jaccard_index["$term_id,$category"]=$(echo "scale=4; $intersection_count / $union_count" | bc)
             else
                 jaccard_index["$term_id,$category"]=0
             fi
         done
+
+        ((term_counter++))
+        if (( term_counter % 100 == 0 )); then
+            echo "Processed $term_counter terms for Jaccard Index."
+        fi
     done
+
+    echo "Finished Jaccard Index calculation."
 }
+
+
+
+
 
 # Handles user commands
 handle_command() {
@@ -145,28 +216,32 @@ show_top_k_stems_for_category() {
     local k=$2
     local count=0
 
-    # Create a temporary file for sorting
-    local temp_file=$(mktemp)
+    # Use an array to collect scores and associated term_ids
+    declare -a scores_array
 
-    # Collect Jaccard Index scores for the category and store in the temporary file
     for key in "${!jaccard_index[@]}"; do
         if [[ $key == *",$category" ]]; then
-            echo "${jaccard_index[$key]} $key" >> "$temp_file"
+            local score=${jaccard_index[$key]}
+            local term_id=${key%,*}
+            scores_array+=("$score $term_id")
         fi
     done
 
-    # Sort the scores and extract the top k stems
-    sort -nr $temp_file | while read -r line && (( count < k )); do
+    # Sort and extract the top k stems without using a temporary file
+    IFS=$'\n' sorted_scores=($(sort -nr <<< "${scores_array[*]}"))
+    unset IFS
+
+    for line in "${sorted_scores[@]:0:$k}"; do
         local score=$(echo $line | cut -d ' ' -f1)
-        local term_id=$(echo $line | cut -d ' ' -f2 | cut -d ',' -f1)
+        local term_id=$(echo $line | cut -d ' ' -f2)
         local stem=${term_id_to_stem[$term_id]}
 
         echo "Stem: $stem, Score: $score"
         ((count++))
+        if (( count >= k )); then
+            break
+        fi
     done
-
-    # Clean up temporary file
-    rm "$temp_file"
 }
 
 show_top_k_categories_for_stem() {
@@ -183,27 +258,31 @@ show_top_k_categories_for_stem() {
         return
     fi
 
-    # Create a temporary file for sorting
-    local temp_file=$(mktemp)
+    # Use an array to collect scores and associated categories
+    declare -a scores_array
 
-    # Collect Jaccard Index scores for the term_id and store in the temporary file
     for key in "${!jaccard_index[@]}"; do
         if [[ $key == "$term_id,"* ]]; then
-            echo "${jaccard_index[$key]} $key" >> "$temp_file"
+            local score=${jaccard_index[$key]}
+            local category=${key#*,}
+            scores_array+=("$score $category")
         fi
     done
 
-    # Sort the scores and extract the top k categories
-    sort -nr $temp_file | while read -r line && (( count < k )); do
+    # Sort and extract the top k categories without using a temporary file
+    IFS=$'\n' sorted_scores=($(sort -nr <<< "${scores_array[*]}"))
+    unset IFS
+
+    for line in "${sorted_scores[@]:0:$k}"; do
         local score=$(echo $line | cut -d ' ' -f1)
-        local category=$(echo $line | cut -d ' ' -f2 | cut -d ',' -f2)
+        local category=$(echo $line | cut -d ' ' -f2)
 
         echo "Category: $category, Score: $score"
         ((count++))
+        if (( count >= k )); then
+            break
+        fi
     done
-
-    # Clean up temporary file
-    rm "$temp_file"
 }
 
 show_jaccard_index_for_pair() {
@@ -290,6 +369,12 @@ show_menu() {
 
 # Main program loop
 main() {
+    # Check if files exist before attempting to parse them
+    if [[ ! -f "rcv1-v2.topics.qrels.txt" ]] || [[ ! -f "lyrl2004_vectors_train.dat.txt" ]] || [[ ! -f "stem.termid.idf.map.txt" ]]; then
+        echo "Error: Required files not found."
+        exit 1
+    fi
+
     # Parse files
     parse_categories_per_document "rcv1-v2.topics.qrels.txt"
     parse_terms_in_documents "lyrl2004_vectors_train.dat.txt"
