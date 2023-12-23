@@ -129,54 +129,39 @@ precompute_doc_sets() {
 }
 
 
-# Calculates the Jaccard Index
-# Function to calculate the Jaccard Index for a given term and category
-# Function to calculate the Jaccard Index for a given term and category
-calculate_jaccard_index() {
-    local term_id=$1
-    local category=$2
-    local intersection_count=0
-    local union_count=0
 
-    # Check if term and category exist in the data
-    if [[ ! ${doc_per_term["$term_id"]+x} ]] || [[ ! ${doc_per_category["$category"]+x} ]]; then
-        echo "Jaccard Index for term $term_id and category $category: 0 (either term or category not found)"
-        return
-    fi
 
-    # Convert space-separated strings to arrays
-    local -a term_documents=(${doc_per_term["$term_id"]})
-    local -a category_documents=(${doc_per_category["$category"]})
-
-    # Create associative arrays for quick lookup
-    declare -A document_lookup
-
-    # Add all term documents to the lookup
-    for doc in "${term_documents[@]}"; do
-        document_lookup["$doc"]=1
-    done
-
-    # Add category documents to the lookup and count intersections
-    for doc in "${category_documents[@]}"; do
-        if [[ ${document_lookup["$doc"]} ]]; then
-            ((intersection_count++))
-        else
-            document_lookup["$doc"]=1
-        fi
-    done
-
-    # The union count is the total count of unique documents
-    union_count=${#document_lookup[@]}
-
-    # Calculate Jaccard Index
-    local jaccard_index=0
-    if [[ $union_count -gt 0 ]]; then
-        jaccard_index=$(bc <<< "scale=4; $intersection_count / $union_count")
-    fi
-
-    echo "Jaccard Index for term $term_id and category $category: $jaccard_index"
+# Function to separate doc sets into an array of unique elements
+to_array() {
+    echo $1 | tr ' ' '\n' | sort -u
 }
 
+# Function to calculate intersection of two sets
+calculate_intersection() {
+    echo "$1" "$2" | tr ' ' '\n' | sort | uniq -d | wc -l
+}
+
+# Function to calculate union of two sets
+calculate_union() {
+    echo "$1" "$2" | tr ' ' '\n' | sort | uniq | wc -l
+}
+
+# Function to calculate Jaccard Index
+calculate_jaccard_index() {
+    local term_docs="$1"
+    local category_docs="$2"
+
+    # Calculate size of intersection and union
+    local intersection_size=$(calculate_intersection "$term_docs" "$category_docs")
+    local union_size=$(calculate_union "$term_docs" "$category_docs")
+
+    # Calculate Jaccard Index using bc for floating-point arithmetic
+    if [ $union_size -ne 0 ]; then
+        echo "scale=4; $intersection_size / $union_size" | bc
+    else
+        echo 0
+    fi
+}
 
 
 
@@ -378,7 +363,9 @@ show_menu() {
 
 # Main program loop
 main() {
-    # Check if files exist before attempting to parse them
+
+    
+     # Check if files exist before attempting to parse them
     if [[ ! -f "rcv1-v2.topics.qrels.txt" ]] || [[ ! -f "lyrl2004_vectors_train.dat.txt" ]] || [[ ! -f "stem.termid.idf.map.txt" ]]; then
         echo "Error: Required files not found."
         exit 1
@@ -392,9 +379,12 @@ main() {
     # Precompute sets
     precompute_doc_sets
 
-    # Calculate Jaccard Index
-    calculate_jaccard_index
-
+    for term in "${!doc_per_term[@]}"; do
+        for category in "${!doc_per_category[@]}"; do
+            jaccard_index=$(calculate_jaccard_index "${doc_per_term[$term]}" "${doc_per_category[$category]}")
+            echo "Jaccard Index for $term and $category: $jaccard_index"
+        done
+    done
     # Main command loop
     while true; do
         show_menu
