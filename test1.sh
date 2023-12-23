@@ -6,6 +6,8 @@ declare -A term_id_to_stem
 declare -A stem_to_term_id
 declare -A doc_per_term
 declare -A doc_per_category
+declare -A term_doc_counts
+declare -A category_doc_counts
 declare -A jaccard_index
 
 # Function definitions
@@ -86,86 +88,84 @@ parse_tid_to_stem() {
 
 # Precomputes DOC(T) and DOC(C)
 precompute_doc_sets() {
-    # Resetting arrays
-    declare -A doc_per_term=()
-    declare -A doc_per_category=()
-    local counter=0
 
-    echo "Starting to precompute DOC(T)."
-
-    # Precompute DOC(T): Mapping from term ID to documents containing the term
-    for document_id in "${!terms_per_document[@]}"; do
-        local terms=(${terms_per_document["$document_id"]})
-        for term_id in "${terms[@]}"; do
-            # Append the document ID to the list of documents for this term
-            doc_per_term["$term_id"]+="$document_id "
+    # Precompute DOC(T)
+    for doc_id in "${!terms_per_document[@]}"; do
+        for term_id in ${terms_per_document[$doc_id]}; do
+            doc_per_term[$term_id]+="$doc_id "
         done
-
-        ((counter++))
-        if (( counter % 1000 == 0 )); then
-            echo "Processed $counter documents for DOC(T)."
-        fi
     done
 
-    echo "Finished precomputing DOC(T)."
-    echo "Starting to precompute DOC(C)."
-    counter=0
-
-    # Precompute DOC(C): Mapping from category to documents belonging to the category
-    for document_id in "${!categories_per_document[@]}"; do
-        local categories=(${categories_per_document["$document_id"]})
-        for category in "${categories[@]}"; do
-            # Append the document ID to the list of documents for this category
-            doc_per_category["$category"]+="$document_id "
+    # Precompute DOC(C)
+    for doc_id in "${!categories_per_document[@]}"; do
+        for category in ${categories_per_document[$doc_id]}; do
+            doc_per_category[$category]+="$doc_id "
         done
-
-        ((counter++))
-        if (( counter % 1000 == 0 )); then
-            echo "Processed $counter documents for DOC(C)."
-        fi
     done
 
-    echo "Finished precomputing DOC(C)."
+    echo "Precomputation of DOC(T) and DOC(C) complete."
+}
+
+precompute_doc_counts() {
+    local doc_id term_id category
+
+    for term_id in "${!doc_per_term[@]}"; do
+        read -ra term_docs <<< "${doc_per_term[$term_id]}"
+        term_doc_counts[$term_id]=${#term_docs[@]}
+    done
+
+    for category in "${!doc_per_category[@]}"; do
+        read -ra category_docs <<< "${doc_per_category[$category]}"
+        category_doc_counts[$category]=${#category_docs[@]}
+    done
+    echo "Precomputation of DOC(T) and DOC(C) counts complete."
 }
 
 
+calculate_jaccard_index_optimized() {
+    local term_id category doc_id
+    local intersection_size union_size
+    local term_count category_count progress_counter=0
 
+    term_count=${#doc_per_term[@]}
+    category_count=${#doc_per_category[@]}
 
-# Function to separate doc sets into an array of unique elements
-to_array() {
-    echo $1 | tr ' ' '\n' | sort -u
+    for term_id in "${!doc_per_term[@]}"; do
+        for category in "${!doc_per_category[@]}"; do
+            # Reset intersection size for each pair
+            intersection_size=0
+
+            # Convert space-separated lists to arrays
+            read -ra term_docs <<< "${doc_per_term[$term_id]}"
+            read -ra category_docs <<< "${doc_per_category[$category]}"
+
+            # Calculate intersection
+            for doc_id in "${term_docs[@]}"; do
+                if [[ " ${category_docs[*]} " =~ " $doc_id " ]]; then
+                    ((intersection_size++))
+                fi
+            done
+
+            # Calculate union size
+            union_size=$(( term_doc_counts[$term_id] + category_doc_counts[$category] - intersection_size ))
+
+            # Calculate Jaccard Index
+            if (( union_size != 0 )); then
+                jaccard_index[$term_id,$category]=$(echo "scale=4; $intersection_size / $union_size" | bc)
+            else
+                jaccard_index[$term_id,$category]=0
+            fi
+
+            # Progress tracking
+            ((progress_counter++))
+            if (( progress_counter % 100 == 0 )); then
+                echo "Processed $progress_counter / $((term_count * category_count)) term-category pairs."
+            fi
+        done
+    done
+
+    echo "Optimized Jaccard Index calculation complete."
 }
-
-# Function to calculate intersection of two sets
-calculate_intersection() {
-    echo "$1" "$2" | tr ' ' '\n' | sort | uniq -d | wc -l
-}
-
-# Function to calculate union of two sets
-calculate_union() {
-    echo "$1" "$2" | tr ' ' '\n' | sort | uniq | wc -l
-}
-
-# Function to calculate Jaccard Index
-calculate_jaccard_index() {
-    local term_docs="$1"
-    local category_docs="$2"
-
-    # Calculate size of intersection and union
-    local intersection_size=$(calculate_intersection "$term_docs" "$category_docs")
-    local union_size=$(calculate_union "$term_docs" "$category_docs")
-
-    # Calculate Jaccard Index using bc for floating-point arithmetic
-    if [ $union_size -ne 0 ]; then
-        echo "scale=4; $intersection_size / $union_size" | bc
-    else
-        echo 0
-    fi
-}
-
-
-
-
 
 # Handles user commands
 handle_command() {
@@ -378,13 +378,11 @@ main() {
 
     # Precompute sets
     precompute_doc_sets
+    precompute_doc_counts
 
-    for term in "${!doc_per_term[@]}"; do
-        for category in "${!doc_per_category[@]}"; do
-            jaccard_index=$(calculate_jaccard_index "${doc_per_term[$term]}" "${doc_per_category[$category]}")
-            echo "Jaccard Index for $term and $category: $jaccard_index"
-        done
-    done
+    # Calculate Jaccard Index
+    calculate_jaccard_index_optimized
+
     # Main command loop
     while true; do
         show_menu
