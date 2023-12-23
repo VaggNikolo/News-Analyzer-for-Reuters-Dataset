@@ -87,17 +87,18 @@ parse_tid_to_stem() {
 # Precomputes DOC(T) and DOC(C)
 precompute_doc_sets() {
     # Resetting arrays
-    doc_per_term=()
-    doc_per_category=()
+    declare -A doc_per_term=()
+    declare -A doc_per_category=()
     local counter=0
 
     echo "Starting to precompute DOC(T)."
 
-    # Precompute DOC(T)
+    # Precompute DOC(T): Mapping from term ID to documents containing the term
     for document_id in "${!terms_per_document[@]}"; do
-        local terms=(${terms_per_document[$document_id]})
+        local terms=(${terms_per_document["$document_id"]})
         for term_id in "${terms[@]}"; do
-            doc_per_term["$term_id"]+="${document_id} "
+            # Append the document ID to the list of documents for this term
+            doc_per_term["$term_id"]+="$document_id "
         done
 
         ((counter++))
@@ -110,11 +111,12 @@ precompute_doc_sets() {
     echo "Starting to precompute DOC(C)."
     counter=0
 
-    # Precompute DOC(C)
+    # Precompute DOC(C): Mapping from category to documents belonging to the category
     for document_id in "${!categories_per_document[@]}"; do
-        local categories=(${categories_per_document[$document_id]})
+        local categories=(${categories_per_document["$document_id"]})
         for category in "${categories[@]}"; do
-            doc_per_category["$category"]+="${document_id} "
+            # Append the document ID to the list of documents for this category
+            doc_per_category["$category"]+="$document_id "
         done
 
         ((counter++))
@@ -126,48 +128,55 @@ precompute_doc_sets() {
     echo "Finished precomputing DOC(C)."
 }
 
+
 # Calculates the Jaccard Index
+# Function to calculate the Jaccard Index for a given term and category
+# Function to calculate the Jaccard Index for a given term and category
 calculate_jaccard_index() {
-    local term_counter=0
+    local term_id=$1
+    local category=$2
+    local intersection_count=0
+    local union_count=0
 
-    echo "Starting Jaccard Index calculation."
+    # Check if term and category exist in the data
+    if [[ ! ${doc_per_term["$term_id"]+x} ]] || [[ ! ${doc_per_category["$category"]+x} ]]; then
+        echo "Jaccard Index for term $term_id and category $category: 0 (either term or category not found)"
+        return
+    fi
 
-    for term_id in "${!doc_per_term[@]}"; do
-        # Convert term documents to a hash table for faster lookup
-        declare -A term_docs_hash
-        for doc in ${doc_per_term[$term_id]}; do
-            term_docs_hash["$doc"]=1
-        done
+    # Convert space-separated strings to arrays
+    local -a term_documents=(${doc_per_term["$term_id"]})
+    local -a category_documents=(${doc_per_category["$category"]})
 
-        for category in "${!doc_per_category[@]}"; do
-            local intersection_count=0
+    # Create associative arrays for quick lookup
+    declare -A document_lookup
 
-            # Calculate intersection count
-            for doc in ${doc_per_category[$category]}; do
-                if [[ ${term_docs_hash[$doc]} ]]; then
-                    ((intersection_count++))
-                fi
-            done
+    # Add all term documents to the lookup
+    for doc in "${term_documents[@]}"; do
+        document_lookup["$doc"]=1
+    done
 
-            # Union count is the sum of unique documents in both sets minus the intersection count
-            local union_count=$((${#term_docs_hash[@]} + ${#doc_per_category[$category]} - intersection_count))
-
-            # Calculate Jaccard Index
-            if [ "$union_count" -ne 0 ]; then
-                jaccard_index["$term_id,$category"]=$(echo "scale=4; $intersection_count / $union_count" | bc)
-            else
-                jaccard_index["$term_id,$category"]=0
-            fi
-        done
-
-        ((term_counter++))
-        if (( term_counter % 100 == 0 )); then
-            echo "Processed $term_counter terms for Jaccard Index."
+    # Add category documents to the lookup and count intersections
+    for doc in "${category_documents[@]}"; do
+        if [[ ${document_lookup["$doc"]} ]]; then
+            ((intersection_count++))
+        else
+            document_lookup["$doc"]=1
         fi
     done
 
-    echo "Finished Jaccard Index calculation."
+    # The union count is the total count of unique documents
+    union_count=${#document_lookup[@]}
+
+    # Calculate Jaccard Index
+    local jaccard_index=0
+    if [[ $union_count -gt 0 ]]; then
+        jaccard_index=$(bc <<< "scale=4; $intersection_count / $union_count")
+    fi
+
+    echo "Jaccard Index for term $term_id and category $category: $jaccard_index"
 }
+
 
 
 
