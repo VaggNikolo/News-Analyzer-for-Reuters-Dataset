@@ -1,14 +1,6 @@
-import os
-import sys
-import time
+import os, sys, time
 
-# Tuple of messages
-MESSAGES = (
-    "I love PLH211          ",
-    "The professor is boring",
-    "but the curriculum is  ",
-    "interesting & useful   "
-)
+MESSAGES = ("I love PLH211          ", "The professor is boring", "but the curriculum is  ", "interesting & useful   ")
 
 # Creating anonymous pipe
 source_to_transformer_fd = os.pipe()
